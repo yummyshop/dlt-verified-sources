@@ -81,20 +81,14 @@ def shopify_source(
 
 
     def construct_fields_query(field_type, level: int, indent="", field_name: Optional[str] = None) -> str:
-        field_queries = []
         if isinstance(field_type, (GraphQLNonNull, GraphQLList)):
             field_type = field_type.of_type
             return construct_fields_query(field_type, level, indent, field_name)
-        elif isinstance(field_type, GraphQLList):
-            field_type = field_type.of_type
-            field_queries.append(f"{indent}{field_name} {{")
         elif isinstance(field_type, GraphQLObjectType):
             if is_queryable(field_type) and field_name not in ["nodes"]:
-                field_queries.append(f"{indent}{field_name} {{ id }}")
-            #if level == 0:
-            #    field_queries.append(f"{indent}{field_name} {{ id }}")
+                return f"{indent}{field_name} {{ id }}\n"
             elif level > 0:
-                #field_queries.append(f"{indent}{field_name} {{")
+                field_queries = []
                 for field_name_internal, field in field_type.fields.items():
                     if field.deprecation_reason:
                         continue
@@ -102,13 +96,17 @@ def shopify_source(
                         continue
                     if field_name_internal in ["edges", "pageInfo"]:
                         continue
+                    if field.args:
+                        continue
                     field_queries.append(construct_fields_query(field.type, level - 1, indent + " ", field_name_internal))
-                if "Connection" not in field_type.name:
-                    field_queries.insert(0, f"{indent}{field_name} {{")
-                    field_queries.append(f"{indent}}}")
+                if "Connection" not in field_type.name and "".join(field_queries):
+                    field_queries.insert(0, f"{indent}{field_name} {{\n")
+                    field_queries.append(f"{indent}}}\n")
+                return "".join(field_queries)
+            return ""
         elif isinstance(field_type, (GraphQLScalarType, GraphQLEnumType)):
-            field_queries.append(f"{indent}{field_name}")
-        return "\n".join(field_queries)
+            return f"{indent}{field_name}\n"
+        return ""
 
     def build_query(query_name):
         query_type = schema.query_type
@@ -119,7 +117,7 @@ def shopify_source(
         return query
 
     #print(is_queryable(schema.get_type("MoneyV2")))
-    print(build_query('customers'))
+    print(build_query('orders'))
     return ()
     # schema_builder = ShopifySchemaBuilder(admin_client)
 
