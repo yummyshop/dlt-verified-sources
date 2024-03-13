@@ -12,7 +12,7 @@ from typing import Any, Iterable, Optional, Literal, List
 
 from .settings import DEFAULT_API_VERSION, DEFAULT_PARTNER_API_VERSION
 from .exceptions import ShopifyPartnerApiError
-from .gql_queries import schema_query, queries_query, bulk_query
+from .gql_queries import bulk_query_status
 
 TOrderStatus = Literal["open", "closed", "cancelled", "any"]
 
@@ -191,6 +191,9 @@ class ShopifyAdminApi:
         )
         resp.raise_for_status()
         return resp.json()
+
+    def get_operation_status(self) -> DictStrAny:
+        return self.run_graphql_query(bulk_query_status)
 
 
 def shopify_resource(type_def: dict, schema: dict, query: dict, client: ShopifyAdminApi) -> Iterable[TDataItem]:

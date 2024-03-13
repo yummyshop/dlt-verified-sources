@@ -109,7 +109,7 @@ def load_partner_api_transactions() -> None:
 if __name__ == "__main__":
     # Add your desired resources to the list...
     resources = ["customers"]
-    load_all_resources(resources, start_date="2024-01-01")
+    load_all_resources(resources, start_date="2024-03-11")
 
     # incremental_load_with_backloading()
 

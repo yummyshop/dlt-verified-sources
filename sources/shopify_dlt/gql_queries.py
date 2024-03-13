@@ -1,13 +1,7 @@
 """GraphQL queries for Shopify API."""
 
-simple_query = """query {
-    __query_name__ {
-        __selected_fields__
-    }
-}"""
-
-simple_query_incremental = """query tapShopify($id: ID!) {
-    __query_name__(id: $id) {
+simple_query = """{
+    __query_name__(__filters__) {
         __selected_fields__
     }
 }"""
@@ -30,15 +24,7 @@ bulk_query = '''
 mutation {
 bulkOperationRunQuery(
     query:"""
-        {
-            __query_name____filters__ {
-                edges {
-                    node {
-                        __selected_fields__
-                    }
-                }
-            }
-        }
+        __full_query__
     """
 )
     {

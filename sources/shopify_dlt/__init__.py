@@ -17,6 +17,50 @@ from .settings import (
     DEFAULT_PARTNER_API_VERSION,
 )
 from .helpers import ShopifyPartnerApi, ShopifyAdminApi, ShopifySchemaBuilder
+from .gql_queries import bulk_query, simple_query
+import requests
+import json
+from datetime import datetime
+from time import sleep
+
+
+DATETIME_FORMAT = "%Y-%m-%dT%H:%M:%S"
+
+def check_status(operation_id: str, shopify_admin_client: ShopifyAdminApi, sleep_time=10, timeout=36000) -> str:
+    status_jsonpath = "$.data.currentBulkOperation"
+    start = datetime.now().timestamp()
+
+    while datetime.now().timestamp() < (start + timeout):
+        status_response = shopify_admin_client.get_operation_status()
+        status = next(
+            iter(jp.find_values(status_jsonpath, input=status_response.json()))
+        )
+        if status["id"] != operation_id:
+            raise Exception(
+                "The current job was not triggered by the process, "
+                "check if other service is using the Bulk API"
+            )
+        if status["url"]:
+            return status["url"]
+        if status["status"] == "FAILED":
+            raise Exception(f"Job failed: {status['errorCode']}")
+        sleep(sleep_time)
+    raise Exception("Job Timeout")
+
+def parse_response_bulk(json_resp, shopify_admin_api_client: ShopifyAdminApi) -> Iterable[dict]:
+    """Parse the response and return an iterator of result rows."""
+    operation_id_jsonpath = "$.data.bulkOperationRunQuery.bulkOperation.id"
+    error_jsonpath = "$.data.bulkOperationRunQuery.userErrors"
+    errors = next(iter(jp.find_values(error_jsonpath, json_resp)), None)
+    if errors:
+        raise Exception(json.dumps(errors))
+    operation_id = next(iter(jp.find_values(operation_id_jsonpath, json_resp)))
+
+    url = check_status(operation_id, shopify_admin_api_client)
+
+    output = requests.get(url, stream=True, timeout=30)
+    for line in output.iter_lines():
+        print(line)
 
 
 @dlt.source(name="shopify")
@@ -55,7 +99,8 @@ def shopify_source(
         Iterable[DltResource]: A list of DltResource objects representing the data resources.
     """
     from graphql import GraphQLObjectType, GraphQLScalarType, GraphQLList, GraphQLNonNull, GraphQLEnumType, build_client_schema
-    #admin_client = ShopifyAdminApi(private_app_password, shop_name, api_version)
+    start_date_obj = ensure_pendulum_datetime(start_date)
+    admin_client = ShopifyAdminApi(private_app_password, shop_name, api_version)
     #from .gql_queries import schema_query, queries_query
     #res = admin_client.run_graphql_query(schema_query)
     #data = res["data"]
@@ -85,7 +130,8 @@ def shopify_source(
             field_type = field_type.of_type
             return construct_fields_query(field_type, level, indent, field_name)
         elif isinstance(field_type, GraphQLObjectType):
-            if is_queryable(field_type) and field_name not in ["nodes"]:
+            # If we can query this object only specify the id field
+            if is_queryable(field_type) and field_name not in ["node"]:
                 return f"{indent}{field_name} {{ id }}\n"
             elif level > 0:
                 field_queries = []
@@ -94,11 +140,14 @@ def shopify_source(
                         continue
                     if field_name_internal in ignore_fields:
                         continue
-                    if field_name_internal in ["edges", "pageInfo"]:
+                    if field_name_internal in ["nodes", "pageInfo"]:
                         continue
+
+                    # If field requires arguments we ignore it
                     if field.args:
                         continue
                     field_queries.append(construct_fields_query(field.type, level - 1, indent + " ", field_name_internal))
+
                 if "Connection" not in field_type.name and "".join(field_queries):
                     field_queries.insert(0, f"{indent}{field_name} {{\n")
                     field_queries.append(f"{indent}}}\n")
@@ -108,20 +157,35 @@ def shopify_source(
             return f"{indent}{field_name}\n"
         return ""
 
-    def build_query(query_name):
+    def build_query(query_name, start_date: Optional[pendulum.DateTime] = None) -> str:
         query_type = schema.query_type
         query_field = query_type.fields.get(query_name)
 
-        fields_query = construct_fields_query(query_field.type, level = 3)
-        query = f"{{\n{query_name} {{\n{fields_query}\n}}\n}}"
+        fields_query = construct_fields_query(query_field.type, level = 8)
+
+        filters = []
+        if start_date:
+            filters.append(f'query: "updated_at:>{start_date.strftime(DATETIME_FORMAT)}"')
+
+        query = simple_query
+        query = query.replace('__query_name__', query_name)
+        query = query.replace('__selected_fields__', fields_query)
+        query = query.replace('__filters__', ','.join(filters))
         return query
 
-    #print(is_queryable(schema.get_type("MoneyV2")))
-    print(build_query('orders'))
-    return ()
-    # schema_builder = ShopifySchemaBuilder(admin_client)
+    def build_bulk_query(query: str) -> str:
+        base_query = bulk_query
+        return base_query.replace('__full_query__', query)
 
-    # start_date_obj = ensure_pendulum_datetime(start_date)
+    full_query = build_query('orders', start_date=start_date_obj)
+    final_query = build_bulk_query(full_query)
+    #print(final_query)
+    #print(full_query)
+    print(is_queryable(schema.get_type("LineItem")))
+    #res = admin_client.run_graphql_query(final_query)
+    #parse_response_bulk(res, admin_client)
+    # schema_builder = ShopifySchemaBuilder(admin_client)
+    return ()
     # end_date_obj = ensure_pendulum_datetime(end_date) if end_date else None
     # created_at_min_obj = ensure_pendulum_datetime(created_at_min)
 
