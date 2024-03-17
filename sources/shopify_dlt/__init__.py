@@ -125,34 +125,59 @@ def shopify_source(
         return False
 
 
-    def construct_fields_query(field_type, level: int, indent="", field_name: Optional[str] = None) -> str:
+    def construct_fields_query(field_type, level: int = 8, indent: str = "", field_name: Optional[str] = None, visited_types: Optional[set] = None, args = None) -> str:
+        if visited_types is None:
+            visited_types = set()
+
         if isinstance(field_type, (GraphQLNonNull, GraphQLList)):
+            # Unpack object
             field_type = field_type.of_type
-            return construct_fields_query(field_type, level, indent, field_name)
+            return construct_fields_query(field_type, level, indent, field_name, visited_types, args)
         elif isinstance(field_type, GraphQLObjectType):
-            # If we can query this object only specify the id field
+            # Reached maximum allowed depth
+            if level == 0:
+                return ""
+
+            # If object was already visited along the path, skip it
+            # We do not want infinite recursion
+            if field_type.name in visited_types:
+                return ""
+            visited_types.add(field_type.name)
+
+            # If we can query this object using other queries only specify the id field
             if is_queryable(field_type) and field_name not in ["node"]:
+                visited_types.remove(field_type.name)
                 return f"{indent}{field_name} {{ id }}\n"
-            elif level > 0:
-                field_queries = []
-                for field_name_internal, field in field_type.fields.items():
-                    if field.deprecation_reason:
-                        continue
-                    if field_name_internal in ignore_fields:
-                        continue
-                    if field_name_internal in ["nodes", "pageInfo"]:
-                        continue
 
-                    # If field requires arguments we ignore it
-                    if field.args:
-                        continue
-                    field_queries.append(construct_fields_query(field.type, level - 1, indent + " ", field_name_internal))
+            field_queries = []
+            for field_name_internal, field in field_type.fields.items():
+                if field.deprecation_reason:
+                    continue
+                if field_name_internal in ignore_fields:
+                    continue
+                if field_name_internal in ["nodes", "pageInfo", "cursor"]:
+                    continue
 
-                if "Connection" not in field_type.name and "".join(field_queries):
+                field_queries.append(construct_fields_query(field.type, level - 1, indent + " ", field_name_internal, visited_types, field.args))
+
+            # Do not repeat types within the same recursion path
+            # But allow same type in different paths
+            visited_types.remove(field_type.name)
+
+            # If some fields were found
+            if "".join(field_queries):
+                if field_type.name.endswith("Connection") and field_name:
+                    # Connection types require either first or last argument
+                    # There is no good number to use as it depends on how many items are there.
+                    field_queries.insert(0, f"{indent}{field_name}(first: 10) {{\n")
+                    field_queries.append(f"{indent}}}\n")
+                elif args:
+                    # In case of any arguments we return an empty results
+                    return ""
+                elif field_name:
                     field_queries.insert(0, f"{indent}{field_name} {{\n")
                     field_queries.append(f"{indent}}}\n")
                 return "".join(field_queries)
-            return ""
         elif isinstance(field_type, (GraphQLScalarType, GraphQLEnumType)):
             return f"{indent}{field_name}\n"
         return ""
@@ -161,7 +186,7 @@ def shopify_source(
         query_type = schema.query_type
         query_field = query_type.fields.get(query_name)
 
-        fields_query = construct_fields_query(query_field.type, level = 8)
+        fields_query = construct_fields_query(query_field.type)
 
         filters = []
         if start_date:
@@ -177,14 +202,12 @@ def shopify_source(
         base_query = bulk_query
         return base_query.replace('__full_query__', query)
 
-    full_query = build_query('orders', start_date=start_date_obj)
-    final_query = build_bulk_query(full_query)
-    #print(final_query)
-    #print(full_query)
-    print(is_queryable(schema.get_type("LineItem")))
+    final_query = build_query('orders', start_date=start_date_obj)
+    final_bulk_query = build_bulk_query(final_query)
+    with open('example_shopify_query.graphql', 'w') as f:
+        f.write(final_query)
     #res = admin_client.run_graphql_query(final_query)
     #parse_response_bulk(res, admin_client)
-    # schema_builder = ShopifySchemaBuilder(admin_client)
     return ()
     # end_date_obj = ensure_pendulum_datetime(end_date) if end_date else None
     # created_at_min_obj = ensure_pendulum_datetime(created_at_min)
